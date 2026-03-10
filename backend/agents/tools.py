@@ -56,27 +56,79 @@ FILE_GENERATOR_TOOLS = [
         "type": "function",
         "function": {
             "name": "generate_pdf",
-            "description": "Gera um arquivo PDF profissional e retorna o link de download",
+            "description": (
+                "Gera um PDF profissional e retorna o link de download. "
+                "MODO PLAYWRIGHT (recomendado para PDFs visuais): forneça 'html_content' com HTML completo e Tailwind CSS — o resultado visual é infinitamente superior. "
+                "MODO TEXTO (fallback): forneça 'title' + 'content' em markdown simples."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "Título do documento"
+                        "description": "Título do documento (usado no modo texto)"
                     },
                     "content": {
                         "type": "string",
-                        "description": "Conteúdo em texto ou markdown"
+                        "description": "Conteúdo em texto/markdown (usado no modo texto quando html_content não é fornecido)"
+                    },
+                    "html_content": {
+                        "type": "string",
+                        "description": (
+                            "HTML completo com estilos Tailwind CSS embutidos para gerar um PDF visualmente rico. "
+                            "Inclua <!DOCTYPE html>, <head> com <script src='https://cdn.tailwindcss.com'></script>, e todo o conteúdo no <body>. "
+                            "Use classes Tailwind para cores, tipografia, tabelas, grids. Fundo branco, fonte sans-serif."
+                        )
                     },
                     "filename": {
                         "type": "string",
-                        "description": "Nome do arquivo (sem extensão)"
+                        "description": "Nome do arquivo sem extensão"
                     }
                 },
-                "required": [
-                    "title",
-                    "content"
-                ]
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_pdf_template",
+            "description": (
+                "Gera um PDF usando um template HTML pré-aprovado (Jinja2). "
+                "O LLM fornece apenas os dados (JSON); o design profissional vem do template. "
+                "Use para relatórios e propostas com visual padronizado e consistente."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "template_name": {
+                        "type": "string",
+                        "enum": ["relatorio", "proposta"],
+                        "description": (
+                            "'relatorio': Relatório com KPIs, tabelas e seções. "
+                            "'proposta': Proposta comercial com capa, entregas e investimento."
+                        )
+                    },
+                    "data": {
+                        "type": "object",
+                        "description": (
+                            "JSON com os dados para injetar no template. "
+                            "Para 'relatorio': {titulo, subtitulo?, empresa?, data?, periodo?, resumo?, "
+                            "metricas?: [{label, valor, variacao?, positivo?}], "
+                            "secoes: [{titulo, texto?, tabela?: {colunas, linhas}, lista?}], conclusao?}. "
+                            "Para 'proposta': {titulo, subtitulo?, empresa_origem?, empresa_destino?, data?, validade?, "
+                            "contexto?, solucao?, "
+                            "entregas?: [{titulo, descricao?}], "
+                            "investimento?: {itens: [{servico, descricao?, valor}], total, condicoes?}, "
+                            "proximos_passos?: [...], cta?, contato?, email?}."
+                        )
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": "Nome do arquivo sem extensão"
+                    }
+                },
+                "required": ["template_name", "data"]
             }
         }
     },
@@ -330,9 +382,90 @@ FILE_MODIFIER_TOOLS = [
     }
 ]
 
-# Design e Dev não têm ferramentas (geração pura de texto/JSON/código)
+# Agente de Design (PostAST JSON para PostBuilder — sem ferramentas)
 DESIGN_TOOLS: list = []
-DEV_TOOLS: list = []
+
+# Agente Dev — Template de Design Visual
+DEV_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "use_design_template",
+            "description": (
+                "Seleciona um template HTML pré-construído do catálogo e preenche com conteúdo real. "
+                "Use SEMPRE que criar qualquer design visual de página única (poster, card, convite, "
+                "briefing, email visual, folder, post de Instagram). "
+                "Para apresentações multi-slide, gere HTML diretamente sem usar esta ferramenta."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "slug": {
+                        "type": "string",
+                        "description": "Slug exato do template conforme catálogo no system prompt. Ex: 'apresentacoes/ia-apresentacao-aurora-hero-split'",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Texto para substituir o <h1> principal do template.",
+                    },
+                    "eyebrow": {
+                        "type": "string",
+                        "description": "Label/tag pequena acima do título (uppercase, curta). Ex: 'NOVIDADE', 'LANÇAMENTO 2026'",
+                    },
+                    "subtitle": {
+                        "type": "string",
+                        "description": "Parágrafo de descrição/subtítulo (substitui .lede). Máx 2 frases.",
+                    },
+                    "footer": {
+                        "type": "string",
+                        "description": "Texto do rodapé. Ex: 'empresa | categoria'",
+                    },
+                    "heading": {
+                        "type": "string",
+                        "description": "Subtítulo secundário para <h2>, se houver no template.",
+                    },
+                    "pexels_query": {
+                        "type": "string",
+                        "description": (
+                            "Termos de busca para encontrar uma foto real no Pexels (preferível a image_url). "
+                            "Use em inglês para melhores resultados. Ex: 'wedding flowers elegant', "
+                            "'business meeting modern office', 'electronic music neon lights'. "
+                            "Deixe em branco para manter o placeholder decorativo SVG do template."
+                        ),
+                    },
+                    "image_url": {
+                        "type": "string",
+                        "description": (
+                            "URL direta de imagem (use apenas se tiver uma URL específica). "
+                            "Prefira pexels_query para busca automática de imagem relevante."
+                        ),
+                    },
+                    "extra_patches": {
+                        "type": "array",
+                        "description": "Substituições adicionais de texto para outros elementos do template.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "find": {"type": "string", "description": "Texto exato a encontrar no HTML"},
+                                "replace": {"type": "string", "description": "Texto de substituição"},
+                            },
+                            "required": ["find", "replace"],
+                        },
+                    },
+                    "color_overrides": {
+                        "type": "object",
+                        "description": (
+                            "Sobrescreve variáveis CSS de cor do template. "
+                            "Variáveis disponíveis: --accent, --accent-2, --accent-3, --bg, --bg2. "
+                            "Ex: {\"--accent\": \"#e63946\", \"--bg\": \"#0a0a0a\"}"
+                        ),
+                    },
+                },
+                "required": ["slug"],
+            },
+        },
+    }
+]
 
 # ── Agente Supervisor (Novo Orquestrador) ─────────────────────────────────────
 SUPERVISOR_TOOLS = [

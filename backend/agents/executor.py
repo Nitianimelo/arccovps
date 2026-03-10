@@ -48,6 +48,12 @@ async def execute_tool(func_name: str, func_args: dict) -> str:
     elif func_name == "ask_browser":
         return await _ask_browser(func_args)
 
+    elif func_name == "generate_pdf_template":
+        return await _generate_pdf_template(func_args)
+
+    elif func_name == "use_design_template":
+        return await _use_design_template(func_args)
+
     return f"Ferramenta desconhecida: {func_name}"
 
 
@@ -106,24 +112,111 @@ async def _ask_browser(args: dict) -> str:
 async def _generate_pdf(args: dict) -> str:
     from backend.core.config import get_config
     from backend.core.supabase_client import upload_to_supabase
-    from backend.services.file_service import generate_pdf
 
     config = get_config()
+    html_content = (args.get("html_content") or "").strip()
 
-    def sync_pdf():
-        pdf_bytes = generate_pdf(args["title"], args["content"])
-        filename = args.get("filename", f"doc-{int(time.time())}")
-        if not filename.endswith(".pdf"):
-            filename += ".pdf"
-        return upload_to_supabase(
-            config.supabase_storage_bucket, filename, pdf_bytes, "application/pdf"
-        )
+    if html_content:
+        # Modo Playwright: HTML+Tailwind → PDF de alta qualidade
+        from backend.services.file_service import generate_pdf_playwright
+        logger.info("[PDF] Modo Playwright (HTML+Tailwind)")
+        pdf_bytes = await generate_pdf_playwright(html_content)
+    else:
+        # Modo texto: reportlab (fallback)
+        from backend.services.file_service import generate_pdf
+        logger.info("[PDF] Modo reportlab (texto)")
+        title = args.get("title", "documento")
+        content = args.get("content", "")
+        pdf_bytes = await asyncio.to_thread(generate_pdf, title, content)
 
-    url = await asyncio.to_thread(sync_pdf)
+    filename = args.get("filename", f"doc-{int(time.time())}")
+    if not filename.endswith(".pdf"):
+        filename += ".pdf"
+
+    url = await asyncio.to_thread(
+        upload_to_supabase,
+        config.supabase_storage_bucket,
+        filename,
+        pdf_bytes,
+        "application/pdf",
+    )
     return (
         f"PDF gerado com sucesso. URL: {url}\n\n"
         f"INSTRUÇÃO OBRIGATÓRIA: Inclua exatamente este link na resposta final: [Baixar PDF]({url})"
     )
+
+
+async def _generate_pdf_template(args: dict) -> str:
+    from backend.core.config import get_config
+    from backend.core.supabase_client import upload_to_supabase
+    from backend.services.file_service import generate_pdf_from_template
+
+    config = get_config()
+    template_name = args.get("template_name", "relatorio")
+    data = args.get("data", {})
+
+    try:
+        logger.info(f"[PDF] Gerando via template Jinja2: '{template_name}'")
+        pdf_bytes = await generate_pdf_from_template(template_name, data)
+    except Exception as e:
+        return f"Erro ao gerar PDF com template '{template_name}': {e}"
+
+    filename = args.get("filename", f"{template_name}-{int(time.time())}")
+    if not filename.endswith(".pdf"):
+        filename += ".pdf"
+
+    url = await asyncio.to_thread(
+        upload_to_supabase,
+        config.supabase_storage_bucket,
+        filename,
+        pdf_bytes,
+        "application/pdf",
+    )
+    return (
+        f"PDF gerado via template '{template_name}'. URL: {url}\n\n"
+        f"INSTRUÇÃO OBRIGATÓRIA: Inclua exatamente este link na resposta final: [Baixar PDF]({url})"
+    )
+
+
+async def _use_design_template(args: dict) -> str:
+    """Aplica um template de design pré-construído e retorna HTML standalone."""
+    from backend.services.template_service import get_template_html, apply_content, search_pexels_image
+
+    slug = (args.get("slug") or "").strip()
+    if not slug:
+        return "Erro: campo 'slug' obrigatório. Verifique o catálogo no system prompt."
+
+    try:
+        html = get_template_html(slug)
+    except FileNotFoundError as e:
+        return str(e)
+    except Exception as e:
+        return f"Erro ao ler template '{slug}': {e}"
+
+    content = {
+        k: args[k]
+        for k in ("title", "eyebrow", "subtitle", "footer", "heading", "extra_patches")
+        if args.get(k) is not None
+    }
+
+    # Resolve imagem: pexels_query tem prioridade sobre image_url direto
+    image_url = args.get("image_url") or ""
+    pexels_query = (args.get("pexels_query") or "").strip()
+    if not image_url and pexels_query:
+        image_url = await search_pexels_image(pexels_query)
+
+    try:
+        html = apply_content(
+            html,
+            content,
+            color_overrides=args.get("color_overrides"),
+            image_url=image_url or None,
+        )
+    except Exception as e:
+        logger.warning(f"[TEMPLATE] Erro ao aplicar conteúdo no template '{slug}': {e}")
+        # Retorna o template mesmo sem patches — melhor do que falhar
+
+    return html
 
 
 async def _generate_excel(args: dict) -> str:

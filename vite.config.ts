@@ -17,22 +17,22 @@ export default defineConfig(({ mode }) => {
       proxy: {
         // Proxy /api/agent/* requests to FastAPI backend
         '/api/agent': {
-          target: 'http://localhost:8000',
+          target: 'http://localhost:8001',
           changeOrigin: true,
           secure: false,
         },
         '/api/builder': {
-          target: 'http://localhost:8000',
+          target: 'http://localhost:8001',
           changeOrigin: true,
           secure: false,
         },
         '/api/admin': {
-          target: 'http://localhost:8000',
+          target: 'http://localhost:8001',
           changeOrigin: true,
           secure: false,
         },
         '/health': {
-          target: 'http://localhost:8000',
+          target: 'http://localhost:8001',
           changeOrigin: true,
           secure: false,
         },

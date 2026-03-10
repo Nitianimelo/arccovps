@@ -67,11 +67,11 @@ export const agentApi = {
      * General Chat (Reasoning) — consumes SSE stream from backend
      * Returns the full assembled response text from 'chunk' events.
      */
-    async chat(messages: any[], systemPrompt: string, onEvent?: (type: string, content: string) => void, signal?: AbortSignal): Promise<string> {
+    async chat(messages: any[], systemPrompt: string, onEvent?: (type: string, content: string) => void, signal?: AbortSignal, model?: string): Promise<string> {
         const res = await fetch(`${API_BASE}/chat`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ messages, system_prompt: systemPrompt }),
+            body: JSON.stringify({ messages, ...(model ? { model } : {}) }),
             signal,
         });
 

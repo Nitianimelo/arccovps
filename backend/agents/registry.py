@@ -62,6 +62,7 @@ def initialize():
         WEB_SEARCH_TOOLS,
         FILE_GENERATOR_TOOLS,
         FILE_MODIFIER_TOOLS,
+        DEV_TOOLS,
     )
     from backend.core.config import get_config
 
@@ -145,12 +146,12 @@ def initialize():
         },
         "dev": {
             "id": "dev",
-            "name": "Agente Dev (Geral)",
+            "name": "Agente Dev (Design Visual)",
             "module": "Sistema",
-            "description": "Gera código HTML/CSS/JS para landing pages e sites genéricos",
+            "description": "Cria designs visuais usando templates pré-construídos ou gera HTML multi-slide",
             "system_prompt": DEV_SYSTEM_PROMPT,
             "model": default_model,
-            "tools": [],  # Gera HTML diretamente, sem ferramentas
+            "tools": DEV_TOOLS,
         },
         "qa": {
             "id": "qa",

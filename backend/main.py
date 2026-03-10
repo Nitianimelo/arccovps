@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.core.config import get_config
 from backend.api import chat, router as intent_router, search, files, ocr, builder, admin
 from backend.api import pages as pages_api
+from backend.api import export as export_api
 from backend.agents import registry
 
 # ── Logging ───────────────────────────────────────────
@@ -59,6 +60,7 @@ app.include_router(files.router, prefix="/api/agent", tags=["files"])
 app.include_router(ocr.router, prefix="/api/agent", tags=["ocr"])
 app.include_router(builder.router, prefix="/api/builder", tags=["builder"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
+app.include_router(export_api.router, prefix="/api/agent", tags=["export"])
 
 # Serving de páginas publicadas — acessível em /p/{slug}
 # No nginx, o subdomínio pages.arccoai.com aponta para este prefixo

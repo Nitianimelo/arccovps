@@ -79,6 +79,7 @@ async def _qa_review(
 # ── Validação Anti-Alucinação ────────────────────────────────────────────────
 
 _URL_PATTERN = re.compile(r'https?://[^\s\)\]"\'>]+', re.IGNORECASE)
+_DOC_TAG_RE = re.compile(r'<doc\s+title="([^"]+)">([\s\S]*?)</doc>', re.DOTALL)
 _MARKDOWN_LINK_PATTERN = re.compile(r'\[([^\]]+)\]\((https?://[^\)]+)\)', re.IGNORECASE)
 
 ROUTES_REQUIRING_LINK = {"file_generator", "file_modifier"}
@@ -141,8 +142,13 @@ async def _run_specialist_with_tools(
     system_prompt: str,
     tools: list,
     max_iterations: int = 5,
+    thought_log: list | None = None,
 ) -> str:
-    """Executa especialista com ferramentas. Retorna resposta final como string."""
+    """
+    Executa especialista com ferramentas. Retorna resposta final como string.
+    Se thought_log for passado, acumula nele o raciocínio do especialista
+    (texto que acompanha tool_calls) para streaming posterior.
+    """
     current = [{"role": "system", "content": system_prompt}, *messages]
 
     for _ in range(max_iterations):
@@ -156,6 +162,12 @@ async def _run_specialist_with_tools(
         current.append(message)
 
         if message.get("tool_calls"):
+            # Captura raciocínio intermediário (texto antes da chamada de ferramenta)
+            if thought_log is not None:
+                intermediate_thought = (message.get("content") or "").strip()
+                if intermediate_thought:
+                    thought_log.append(intermediate_thought)
+
             for tool in message["tool_calls"]:
                 func_name = tool["function"]["name"]
                 try:
@@ -165,7 +177,7 @@ async def _run_specialist_with_tools(
                     result = "Erro: Argumentos da ferramenta com JSON inválido. Corrija a formatação JSON e tente novamente."
                 except Exception as e:
                     result = f"Erro na execução da ferramenta: {e}"
-                    
+
                 current.append({
                     "role": "tool",
                     "tool_call_id": tool["id"],
@@ -175,6 +187,51 @@ async def _run_specialist_with_tools(
             return message.get("content", "")
 
     return "Limite de iterações atingido no Especialista."
+
+
+async def _run_terminal_one_shot(
+    messages: list,
+    model: str,
+    system_prompt: str,
+    tools: list,
+) -> str:
+    """
+    Agente terminal com suporte a UMA chamada de ferramenta.
+
+    Fluxo otimizado (evita a 3ª chamada ao LLM):
+      1. Chama o LLM uma vez com tools disponíveis.
+      2. Se o LLM chamar uma ferramenta → executa e retorna o resultado diretamente.
+      3. Se o LLM responder diretamente (HTML multi-slide) → retorna o texto.
+
+    Comparado a _run_specialist_with_tools: economiza 1 LLM call por design
+    (o agente não precisa "re-outputar" os 9KB de HTML que a ferramenta já gerou).
+    """
+    current = [{"role": "system", "content": system_prompt}, *messages]
+
+    data = await call_openrouter(
+        messages=current,
+        model=model,
+        max_tokens=6000,
+        tools=tools if tools else None,
+    )
+    message = data["choices"][0]["message"]
+
+    # LLM gerou HTML diretamente (multi-slide, sem ferramenta)
+    if not message.get("tool_calls"):
+        return message.get("content", "")
+
+    # LLM chamou ferramenta — executa e retorna resultado direto (sem segunda chamada LLM)
+    tool = message["tool_calls"][0]
+    func_name = tool["function"]["name"]
+    try:
+        func_args = json.loads(tool["function"]["arguments"])
+        result = await execute_tool(func_name, func_args)
+    except json.JSONDecodeError:
+        result = "Erro: argumentos JSON inválidos na ferramenta. Tente novamente."
+    except Exception as e:
+        result = f"Erro ao executar '{func_name}': {e}"
+
+    return result
 
 
 async def _run_specialist_no_tools_stream(
@@ -207,18 +264,24 @@ async def _run_specialist_with_qa(
         else:
             yield sse("steps", f"<step>Aperfeiçoando qualidade do resultado...</step>")
 
-        # Executar especialista (genérico — usa o registry para qualquer rota)
+        # Executa especialista capturando o raciocínio intermediário
+        thought_log: list[str] = []
         try:
             specialist_response = await _run_specialist_with_tools(
                 current_messages,
                 registry.get_model(route) or model,
                 registry.get_prompt(route),
                 registry.get_tools(route),
+                thought_log=thought_log,
             )
         except Exception as e:
             logger.error(f"[SPECIALIST] Erro na execução do especialista '{route}': {e}")
             yield f"RESULT:Erro ao processar especialista: {e}"
             return
+
+        # Emite raciocínio do especialista como eventos "thought" para a UI
+        for thought in thought_log:
+            yield sse("thought", thought)
 
         # ── Validação Anti-Alucinação: garantir link de download ───────────
         specialist_response = _validate_specialist_response(
@@ -295,7 +358,12 @@ async def orchestrate_and_stream(
             return
 
         current_messages.append(message)
-        
+
+        # Emite raciocínio do Supervisor quando ele pensa antes de chamar uma ferramenta
+        supervisor_reasoning = (message.get("content") or "").strip()
+        if supervisor_reasoning and message.get("tool_calls"):
+            yield sse("thought", supervisor_reasoning)
+
         # O Supervisor decidiu usar uma Ferramenta (Especialista)?
         if message.get("tool_calls"):
             for tool in message["tool_calls"]:
@@ -334,7 +402,7 @@ async def orchestrate_and_stream(
                         step_message = "Criando design → posicionando elementos e aplicando estilo..."
                         temp_msgs = recent_context + [{"role": "user", "content": func_args.get("requirements", user_intent)}]
                     elif route == "dev":
-                        step_message = "Gerando código HTML/CSS → compilando layout da página..."
+                        step_message = "Criando design visual → selecionando template e aplicando conteúdo..."
                         temp_msgs = recent_context + [{"role": "user", "content": func_args.get("requirements", user_intent)}]
                     elif route == "browser":
                         url = func_args.get("url", "")
@@ -350,16 +418,29 @@ async def orchestrate_and_stream(
 
                 if is_terminal:
                     yield sse("steps", f"<step>{step_message}</step>")
-                    yield sse("steps", "<step>Transmitindo resultado em tempo real...</step>")
                     route_prompt = registry.get_prompt(route)
                     route_model = registry.get_model(route) or model
-                    
-                    full_terminal_code = ""
-                    async for text_chunk in _run_specialist_no_tools_stream(temp_msgs, route_model, route_prompt, max_tokens=6000):
-                        full_terminal_code += text_chunk
-                        yield sse("chunk", text_chunk)
-                        
-                    # Aqui rodamos limitados, proteção de frontend, termina todo request do SSE via return
+                    route_tools = registry.get_tools(route)
+
+                    if route_tools:
+                        # Terminal com ferramentas: 1 LLM call + execução da ferramenta
+                        # A ferramenta retorna o HTML diretamente — sem 3ª chamada ao LLM
+                        yield sse("steps", "<step>Selecionando template e aplicando conteúdo...</step>")
+                        final_result = await _run_terminal_one_shot(
+                            temp_msgs, route_model, route_prompt, route_tools
+                        )
+                        chunk_size = 40
+                        for i in range(0, len(final_result), chunk_size):
+                            yield sse("chunk", final_result[i:i + chunk_size])
+                    else:
+                        # Terminal sem ferramentas — stream direto (design PostAST)
+                        yield sse("steps", "<step>Transmitindo resultado em tempo real...</step>")
+                        async for text_chunk in _run_specialist_no_tools_stream(
+                            temp_msgs, route_model, route_prompt, max_tokens=6000
+                        ):
+                            yield sse("chunk", text_chunk)
+
+                    # Proteção do frontend: encerra o loop do Supervisor imediatamente
                     return
                 elif route == "browser":
                     # Browser: executa direto pelo executor, sem sub-agente
@@ -441,8 +522,19 @@ async def orchestrate_and_stream(
             # IMPORTANTE: Usa a resposta já obtida na chamada acima (sem chamar o LLM de novo)
             # Isso garante que links de download e dados dos especialistas sejam preservados.
             yield sse("steps", "<step>Preparando resposta final...</step>")
-            
+
             content = message.get("content", "")
+
+            # Detecta documento de texto com tag <doc title="...">...</doc>
+            doc_match = _DOC_TAG_RE.search(content)
+            if doc_match:
+                doc_title = doc_match.group(1).strip()
+                doc_content = doc_match.group(2).strip()
+                # Emite evento especial para o frontend mostrar botões de download
+                yield sse("text_doc", json.dumps({"title": doc_title, "content": doc_content}))
+                # Remove a tag <doc> deixando apenas o conteúdo interno para exibição
+                content = _DOC_TAG_RE.sub(doc_content, content)
+
             if content:
                 # Envia em chunks pequenos para simular streaming na UI
                 chunk_size = 12

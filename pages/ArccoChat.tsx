@@ -7,6 +7,8 @@ import { driveService } from '../lib/driveService';
 import { ArtifactCard } from '../components/chat/ArtifactCard';
 import AgentThoughtPanel, { ThoughtStep } from '../components/chat/AgentThoughtPanel';
 import { BrowserAgentCard } from '../components/chat/BrowserAgentCard';
+import TextDocCard from '../components/chat/TextDocCard';
+import PresentationCard from '../components/chat/PresentationCard';
 import CircuitBackground from '../components/ui/CircuitBackground';
 import ModelDropdownWithSearch from '../components/ModelDropdownWithSearch';
 import { PostAST } from './arcco-pages/types/ast';
@@ -130,6 +132,7 @@ const ArccoChatPage: React.FC<ArccoChatPageProps> = ({
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const thoughtsStartTimeRef = useRef<number>(0);
   const [previewData, setPreviewData] = useState<{ url?: string, filename: string, type: 'pdf' | 'excel' | 'code' | 'design' | 'other', content?: string, ast?: any } | null>(null);
+  const [textDocArtifact, setTextDocArtifact] = useState<{ title: string; content: string } | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const pexelsUrlsRef = useRef<string[]>([]);
 
@@ -268,6 +271,7 @@ const ArccoChatPage: React.FC<ArccoChatPageProps> = ({
     setIsLoading(true);
     setAgentThoughts([]);
     setBrowserAction(null);
+    setTextDocArtifact(null);
     setIsThoughtsExpanded(true);
     setElapsedSeconds(0);
     thoughtsStartTimeRef.current = Date.now();
@@ -309,71 +313,8 @@ const ArccoChatPage: React.FC<ArccoChatPageProps> = ({
         });
       };
 
-      // ── Pexels: busca imagens se o usuário pediu algo visual ──────────────
-      let pexelsUrls: string[] = [];
-      const imageKeywords = /(imagem|image|foto|photo|design|post|banner|thumbnail|capa|visual|gato|cat|criar|gerar|animal|logo|paisagem)/i;
-      if (imageKeywords.test(text)) {
-        try {
-          // Extrai termos de busca — aceita palavras com 2+ letras
-          const stopWords = ['criar', 'gerar', 'fazer', 'quero', 'preciso', 'para', 'sobre', 'uma', 'com', 'que', 'post', 'banner', 'design', 'imagem', 'foto'];
-          const searchTerms = text
-            .replace(/[^a-zA-Z\u00e0-\u00fa\s]/g, '')
-            .split(/\s+/)
-            .filter(w => w.length > 1 && !stopWords.includes(w.toLowerCase()))
-            .slice(0, 4)
-            .join(' ');
-
-          const finalQuery = searchTerms || text.replace(/[^a-zA-Z\u00e0-\u00fa\s]/g, '').trim();
-          if (finalQuery) {
-            const result = await pexelsService.searchPhotos(finalQuery, { per_page: 3, orientation: 'landscape' });
-            pexelsUrls = result.photos.map(p => p.src.large);
-            pexelsUrlsRef.current = pexelsUrls;
-          }
-        } catch (e) {
-          console.warn('[Pexels] Search failed in chat:', e);
-        }
-      }
-
-      // Contrói bloco de URLs para o prompt
-      const pexelsBlock = pexelsUrls.length > 0
-        ? `\n\nIMPORTANTE — IMAGENS REAIS DISPONÍVEIS (USE OBRIGATORIAMENTE estas URLs no "src" dos ImageOverlay):
-${pexelsUrls.map((url, i) => `- Imagem ${i + 1}: ${url}`).join('\n')}
-NUNCA invente URLs de imagens. NUNCA use .png, .jpg ou nomes de arquivo inventados. Use APENAS as URLs acima.`
-        : `\nSe precisar de imagem, use: https://images.pexels.com/photos/1181244/pexels-photo-1181244.jpeg?auto=compress&cs=tinysrgb&w=1080`;
-
-      const systemPrompt = `Você é um Cientista de Dados e Engenheiro de Software autônomo. Role: ${userPlan} user. Nome: ${userName}.
-Use markdown. Responda em PT-BR.
-${pexelsBlock}
-
-REGRAS PARA DESIGN E IMAGENS:
-Gere OBRIGATORIAMENTE um JSON (PostAST) no bloco \`\`\`json com esta estrutura exata:
-\`\`\`json
-{
-"format": "square",
-"meta": { "title": "Título do Post", "theme": "dark" },
-"slides": [
-{
-"id": "slide-1",
-"elements": [
-{
-"id": "bg-1",
-"type": "ImageOverlay",
-"props": { "src": "${pexelsUrls[0] || 'https://images.pexels.com/photos/1181244/pexels-photo-1181244.jpeg?auto=compress&cs=tinysrgb&w=1080'}", "opacity": 0.4 },
-"styles": { "width": "100%", "height": "100%", "top": "0", "left": "0" }
-},
-{
-"id": "text-1",
-"type": "TextOverlay",
-"props": { "text": "Texto Chamativo", "variant": "h1" },
-"styles": { "color": "#ffffff", "fontSize": "60px", "top": "40%", "left": "10%", "fontWeight": "bold" }
-}
-]
-}
-]
-}
-\`\`\`
-Não adicione comentários. Utilize 'TextOverlay', 'ImageOverlay' ou 'Shape' para os types dos elements.
-REGRA ABSOLUTA: O campo "src" de todo ImageOverlay DEVE começar com "https://images.pexels.com/". NUNCA use URLs inventadas.`;
+      // Limpa ref de pexels (não mais usada para geração, apenas para renderização PostAST legada)
+      pexelsUrlsRef.current = [];
 
       let fullResponse = '';
       let terminalLogs = '';
@@ -382,7 +323,7 @@ REGRA ABSOLUTA: O campo "src" de todo ImageOverlay DEVE começar com "https://im
       const controller = new AbortController();
       abortControllerRef.current = controller;
 
-      await agentApi.chat(formattedMessages, systemPrompt, (type: string, content: string) => {
+      await agentApi.chat(formattedMessages, '', (type: string, content: string) => {
 
         // Agent Thought Panel — captura os steps do orquestrador/especialistas
         if (type === 'steps') {
@@ -393,6 +334,31 @@ REGRA ABSOLUTA: O campo "src" de todo ImageOverlay DEVE começar com "https://im
                 s.status === 'running' ? { ...s, status: 'done' as const } : s
               );
               return [...updated, { label, status: 'running' }];
+            });
+          }
+          return;
+        }
+
+        // Documento de texto — mostra card com botões DOCX / PDF
+        if (type === 'text_doc') {
+          try {
+            const doc = JSON.parse(content);
+            if (doc.title && doc.content) {
+              setTextDocArtifact({ title: doc.title, content: doc.content });
+            }
+          } catch { /* ignore parse errors */ }
+          return;
+        }
+
+        // Raciocínio do LLM em texto livre (estilo ChatGPT Thinking)
+        if (type === 'thought') {
+          const thought = content.trim();
+          if (thought) {
+            setAgentThoughts(prev => {
+              const updated = prev.map(s =>
+                s.status === 'running' ? { ...s, status: 'done' as const } : s
+              );
+              return [...updated, { label: thought, status: 'running', isThought: true }];
             });
           }
           return;
@@ -410,12 +376,12 @@ REGRA ABSOLUTA: O campo "src" de todo ImageOverlay DEVE começar com "https://im
         if (type === 'chunk') {
           if (!hasStartedTalking) {
             hasStartedTalking = true;
-            // Marca o último step como concluído e recolhe o painel
+            // Marca o último step como concluído e recolhe o painel com micro-delay
             setAgentThoughts(prev =>
               prev.map(s => s.status === 'running' ? { ...s, status: 'done' as const } : s)
             );
-            setIsThoughtsExpanded(false);
-
+            // Pequeno delay antes de recolher — deixa o usuário ver o "Concluído"
+            setTimeout(() => setIsThoughtsExpanded(false), 600);
           }
 
           fullResponse += content;
@@ -512,6 +478,12 @@ REGRA ABSOLUTA: O campo "src" de todo ImageOverlay DEVE começar com "https://im
   };
 
   const renderContent = (content: string) => {
+    // Detecta resposta que é uma apresentação HTML completa (terminal tool generate_web_page)
+    const trimmedContent = content.trim();
+    if (trimmedContent.startsWith('<!DOCTYPE') || trimmedContent.toLowerCase().startsWith('<html')) {
+      return <PresentationCard html={trimmedContent} isStreaming={isLoading} />;
+    }
+
     // Matches closed OR unclosed code blocks (until end of string) for streaming safety
     const parts = content.split(/(```[\s\S]*? (?: ```|$))/g);
     return parts.map((part, index) => {
@@ -814,7 +786,11 @@ REGRA ABSOLUTA: O campo "src" de todo ImageOverlay DEVE começar com "https://im
             // ACTIVE CHAT STATE - NO AVATARS
             <div className="flex flex-col min-h-full">
               <div className="flex-1 p-4 md:p-6 space-y-6 max-w-4xl mx-auto w-full">
-                {messages.map((msg) => (
+                {messages.map((msg, msgIndex) => {
+                  const isLastAssistant = msg.role === 'assistant' && msgIndex === messages.length - 1;
+                  const isStreaming = isLastAssistant && isLoading && msg.content.length > 0;
+
+                  return (
                   <div
                     key={msg.id}
                     className={`flex gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}
@@ -824,7 +800,9 @@ REGRA ABSOLUTA: O campo "src" de todo ImageOverlay DEVE começar com "https://im
                                   ${msg.role === 'user'
                         ? 'bg-[#222] text-white rounded-tr-sm shadow-md'
                         : 'bg-transparent text-neutral-200'
-                      } ${msg.isError ? 'border border-red-500/30 bg-red-500/10' : ''}`}
+                      } ${msg.isError ? 'border border-red-500/30 bg-red-500/10' : ''} ${
+                        isStreaming ? 'animate-typing-border' : ''
+                      }`}
                     >
                       {renderContent(msg.content)}
 
@@ -841,7 +819,8 @@ REGRA ABSOLUTA: O campo "src" de todo ImageOverlay DEVE começar com "https://im
                       )}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
 
                 {/* Agent Thought Panel — mostra steps do orquestrador em tempo real */}
                 {agentThoughts.length > 0 && (
@@ -862,6 +841,13 @@ REGRA ABSOLUTA: O campo "src" de todo ImageOverlay DEVE começar com "https://im
                   </div>
                 )}
 
+                {/* Text Document Artifact — botões DOCX / PDF para documentos escritos */}
+                {textDocArtifact && !isLoading && (
+                  <div className="w-full max-w-[85%] md:max-w-[80%]">
+                    <TextDocCard title={textDocArtifact.title} content={textDocArtifact.content} />
+                  </div>
+                )}
+
                 {/* Terminal legado só aparece em Agent Mode explícito sem steps */}
                 {isTerminalOpen && agentThoughts.length === 0 && (
                   <div className="flex gap-4 flex-row">
@@ -877,18 +863,30 @@ REGRA ABSOLUTA: O campo "src" de todo ImageOverlay DEVE começar com "https://im
                   </div>
                 )}
 
-                {/* Loading dots apenas antes do primeiro step chegar */}
+                {/* Loading — elegant orbit before first step arrives */}
                 {isLoading && agentThoughts.length === 0 && !isTerminalOpen && (
-                  <div className="flex items-center gap-3 animate-pulse ml-2">
-                    <div className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '0s' }}></div>
-                    <div className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                    <div className="w-2 h-2 rounded-full bg-indigo-500 animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+                  <div className="flex items-center gap-3 ml-2 py-1">
+                    <div className="relative w-7 h-7">
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="w-1.5 h-1.5 rounded-full bg-indigo-400/60" />
+                      </div>
+                      <div className="absolute inset-0 animate-orbit">
+                        <div className="w-1 h-1 rounded-full bg-indigo-400" />
+                      </div>
+                      <div className="absolute inset-0 animate-orbit" style={{ animationDelay: '-0.6s', animationDuration: '2.2s' }}>
+                        <div className="w-1 h-1 rounded-full bg-violet-400/70" />
+                      </div>
+                      <div className="absolute inset-0 animate-orbit" style={{ animationDelay: '-1.2s', animationDuration: '2.8s' }}>
+                        <div className="w-0.5 h-0.5 rounded-full bg-indigo-300/40" />
+                      </div>
+                    </div>
+                    <span className="text-[11px] text-neutral-600 shimmer-text">Arcco está analisando...</span>
                   </div>
                 )}
 
                 {/* Botão Parar — aparece durante execução do agente */}
                 {isLoading && (
-                  <div className="flex justify-center my-2">
+                  <div className="flex justify-center my-3">
                     <button
                       onClick={() => {
                         abortControllerRef.current?.abort();
@@ -898,10 +896,10 @@ REGRA ABSOLUTA: O campo "src" de todo ImageOverlay DEVE começar com "https://im
                         );
                         setIsThoughtsExpanded(false);
                       }}
-                      className="flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] hover:bg-[#2a2a2a] border border-[#333] hover:border-red-500/50 rounded-full text-xs text-neutral-400 hover:text-red-400 transition-all"
+                      className="flex items-center gap-2 px-5 py-2 bg-[#141414] hover:bg-[#1e1e1e] border border-[#2a2a2a] hover:border-neutral-600 rounded-full text-[11px] text-neutral-500 hover:text-neutral-300 transition-all duration-200 backdrop-blur-sm"
                     >
-                      <Square size={12} fill="currentColor" />
-                      Parar
+                      <Square size={10} fill="currentColor" />
+                      Parar geração
                     </button>
                   </div>
                 )}
